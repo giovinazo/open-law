@@ -8,14 +8,21 @@ NAS 프록시가 OC=giovinazo를 자동 주입하므로 클라이언트는 토�
 화이트리스트가 NAS 외부 IP로 통합돼 어느 환경에서나 호출 가능.
 """
 
+import hashlib
+import json
 import os
+import pathlib
+import time
 from typing import Literal
+from urllib.parse import urlencode
 
 import requests
 from mcp.server.fastmcp import FastMCP
 
 PROXY_URL = os.environ.get("LAW_PROXY_URL", "http://giovinazo.synology.me:8765").rstrip("/")
 TIMEOUT = 30
+_CACHE_DIR = pathlib.Path.home() / ".cache" / "open-law-mcp"
+_CACHE_TTL_SEC = 7 * 86400  # 7일
 
 # 자주 쓰는 법령 약칭 → 정식 명칭 (search_law include_abbreviation=True 시 적용)
 # TODO: 20개 초과 시 별도 JSON으로 분리.
@@ -38,15 +45,40 @@ _LAW_ABBR = {
 mcp = FastMCP("open-law")
 
 
+def _cache_path(path: str, params: dict) -> pathlib.Path:
+    key_src = path + "|" + urlencode(sorted(params.items()))
+    key = hashlib.sha1(key_src.encode("utf-8")).hexdigest()
+    return _CACHE_DIR / f"{key}.json"
+
+
 def _call(path: str, params: dict) -> dict:
     token = os.environ.get("LAW_PROXY_TOKEN")
     if not token:
         raise RuntimeError("환경변수 LAW_PROXY_TOKEN 미설정. MCP 설정에 주입 필요.")
     full = {"type": "JSON", **params}
+    use_cache = os.environ.get("OPEN_LAW_CACHE", "1") != "0"
+
+    if use_cache:
+        cache_file = _cache_path(path, full)
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < _CACHE_TTL_SEC:
+            try:
+                return json.loads(cache_file.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                pass  # 손상된 캐시는 무시하고 재호출
+
     headers = {"X-Proxy-Token": token}
     r = requests.get(f"{PROXY_URL}/{path}", params=full, headers=headers, timeout=TIMEOUT)
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+
+    if use_cache:
+        try:
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            _cache_path(path, full).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass  # 캐시 쓰기 실패해도 응답은 반환
+
+    return data
 
 
 def _normalize_date(s: str | None) -> str | None:

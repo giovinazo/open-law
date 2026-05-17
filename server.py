@@ -49,6 +49,16 @@ def _call(path: str, params: dict) -> dict:
     return r.json()
 
 
+def _normalize_date(s: str | None) -> str | None:
+    """YYYYMMDD·YYYY-MM-DD·YYYY/MM/DD·YYYY.MM.DD 모두 받아 YYYYMMDD로 정규화."""
+    if not s:
+        return None
+    cleaned = s.replace("-", "").replace("/", "").replace(".", "")
+    if len(cleaned) != 8 or not cleaned.isdigit():
+        raise ValueError(f"날짜는 YYYYMMDD 또는 YYYY-MM-DD 형식이어야 합니다 (입력값: {s!r})")
+    return cleaned
+
+
 def _normalize_buchik(buchik_block: dict | None) -> list[dict]:
     """법령 응답의 부칙 블록을 평탄화한다.
 
@@ -188,12 +198,23 @@ def get_law_text(
 
 
 @mcp.tool()
-def search_decisions(query: str, display: int = 20) -> dict:
+def search_decisions(
+    query: str,
+    display: int = 20,
+    court: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
     """판례를 키워드로 검색한다.
 
     Args:
-        query: 검색어 (예: '손해배상', '개인정보 유출', '공동불법행위').
+        query: 검색어 (예: '손해배상', '개인정보 유출').
         display: 최대 결과 개수. 기본 20.
+        court: 법원명 정확매칭 (예: '대법원', '서울고등법원').
+        date_from: 선고일 시작. YYYYMMDD 또는 YYYY-MM-DD.
+        date_to: 선고일 종료. YYYYMMDD 또는 YYYY-MM-DD.
+            from/to 어느 한쪽만 지정하면 반대쪽은 무한대로 처리.
+            (법제처 API는 prncYd 범위 'YYYYMMDD~YYYYMMDD'만 지원)
 
     Returns:
         {"PrecSearch": {"prec": [{판례일련번호, 사건번호, 법원명,
@@ -201,9 +222,17 @@ def search_decisions(query: str, display: int = 20) -> dict:
 
     Examples:
         search_decisions("개인정보 유출")
-        search_decisions("손해배상", display=10)
+        search_decisions("손해배상", court="대법원")
+        search_decisions("개인정보", date_from="20200101", date_to="2025-12-31")
     """
-    return _call("lawSearch.do", {"target": "prec", "query": query, "display": display})
+    params: dict = {"target": "prec", "query": query, "display": display}
+    if court:
+        params["curt"] = court
+    df = _normalize_date(date_from)
+    dt = _normalize_date(date_to)
+    if df or dt:
+        params["prncYd"] = f"{df or '00010101'}~{dt or '99991231'}"
+    return _call("lawSearch.do", params)
 
 
 @mcp.tool()

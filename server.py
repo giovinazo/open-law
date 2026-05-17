@@ -9,6 +9,8 @@ NAS 프록시가 OC=giovinazo를 자동 주입하므로 클라이언트는 토�
 """
 
 import os
+from typing import Literal
+
 import requests
 from mcp.server.fastmcp import FastMCP
 
@@ -50,30 +52,67 @@ def search_law(query: str, display: int = 20) -> dict:
 
 
 @mcp.tool()
-def get_law_text(mst: str, jo: str | None = None) -> dict:
+def get_law_text(
+    mst: str,
+    jo: str | None = None,
+    mode: Literal["summary", "articles_only", "full"] = "full",
+) -> dict:
     """법령 본문 또는 특정 조문을 조회한다.
 
     주의: 큰 법령(민법·형법·산집법 등)은 전체 응답이 수백 KB~1 MB에
-    달해 LLM 컨텍스트 로드 실패가 잦다. 다음 순서를 권장한다.
-      1단계: jo 생략 호출로 기본정보·조문 구조 먼저 확인
-      2단계: 필요한 조문만 jo='제13조' 형태로 재호출
+    달해 LLM 컨텍스트 로드 실패가 잦다. mode='summary'로 구조 먼저
+    확인 후 필요한 조문만 jo로 재호출하는 패턴을 권장한다.
 
     Args:
         mst: search_law 결과의 법령일련번호(MST). 예: '270351'.
         jo: 조문 지정. '제3조' 또는 6자리 코드 '000300'. 생략 시 전체.
+        mode: 응답 크기 제어 (jo 미지정일 때만 적용):
+            - 'summary': 기본정보 + 조문 목록(번호·제목·여부)만 (수 KB)
+            - 'articles_only': 기본정보 + 조문(부칙·개정문 제외)
+            - 'full': 전체 (기본값, 호환성 유지)
 
     Returns:
-        {"법령": {"기본정보": {...}, "조문": {"조문단위": [...]},
-        "부칙": {"부칙단위": [...]}, "개정문": {...}, "제개정이유": {...}}}
+        mode='full': {"법령": {"기본정보", "조문", "부칙", "개정문",
+            "제개정이유"}}
+        mode='summary': {"기본정보": {...}, "조문수": N,
+            "조문목록": [{"조문번호", "조문제목", "조문여부"}, ...]}
+        mode='articles_only': {"기본정보": {...}, "조문": {...}}
 
     Examples:
-        get_law_text(mst="270351", jo="000300")  # 개인정보보호법 제3조
-        get_law_text(mst="270351")                # 전체(큰 법령은 주의)
+        get_law_text(mst="270351", jo="000300")          # 제3조
+        get_law_text(mst="283929", mode="summary")        # 산집법 구조만
+        get_law_text(mst="283929", mode="articles_only")  # 산집법 조문만
     """
     params = {"target": "law", "MST": mst}
     if jo:
         params["JO"] = jo
-    return _call("lawService.do", params)
+    raw = _call("lawService.do", params)
+
+    if jo or mode == "full":
+        return raw
+
+    body = raw.get("법령", {})
+    units = body.get("조문", {}).get("조문단위", [])
+    if isinstance(units, dict):
+        units = [units]
+
+    if mode == "summary":
+        return {
+            "기본정보": body.get("기본정보"),
+            "조문수": len(units),
+            "조문목록": [
+                {
+                    "조문번호": u.get("조문번호"),
+                    "조문제목": u.get("조문제목"),
+                    "조문여부": u.get("조문여부"),
+                }
+                for u in units
+            ],
+        }
+    return {
+        "기본정보": body.get("기본정보"),
+        "조문": body.get("조문"),
+    }
 
 
 @mcp.tool()

@@ -6,7 +6,7 @@
 
 ## 무엇을 하는가
 
-법제처 OPEN API는 현행 법령·행정규칙·자치법규·법령해석례·판례·헌재결정례 등 9종 데이터(target)를 제공한다. 본 MCP v1.0은 그중 가장 활용도가 높은 **법령 본문**과 **판례**를 4개 도구로 노출한다.
+법제처 OPEN API는 현행 법령·행정규칙·자치법규·법령해석례·판례·헌재결정례 등 9종 데이터(target)를 제공한다. 본 MCP v1.1은 그중 가장 활용도가 높은 **법령 본문**과 **판례**를 4개 도구로 노출하며, 옵션 인자(응답 모드·약칭·소관부처·법원·선고일 필터)와 디스크 캐싱을 지원한다.
 
 > *예* — "개인정보 보호법 제3조 본문 보여줘", "산집법 시행령에서 'M&A' 관련 조문 찾아줘", "네이트 개인정보 유출 손해배상 판결 요지 정리해줘"
 
@@ -22,16 +22,17 @@ Claude ──stdio──▶ server.py(MCP) ──HTTPS──▶ NAS proxy(FastAP
 
 법제처 OPEN API는 신청 시 등록한 **IP만 화이트리스트**로 허용한다(최대 4개). 노트북·집·이동망 등 환경마다 IP가 달라지면 일일이 재등록해야 하는 한계가 있다. 이 MCP는 NAS의 고정 외부 IP를 단일 게이트웨이로 두고, 클라이언트는 토큰만 가지고 어디서든 호출할 수 있게 설계했다.
 
-## 제공 도구 (v1.0 — 4개)
+## 제공 도구 (v1.1 — 4개)
 
-### 1. `search_law(query, display=20)`
+### 1. `search_law(query, display=20, org=None, include_abbreviation=False)`
 
 법령명으로 현행 법령을 검색해 MST(법령일련번호)·법령ID 획득.
 
 **인자**
-- `query` *(string, required)* — 법령명 (예: `"개인정보 보호법"`, `"산업집적활성화 및 공장설립에 관한 법률"`)
-  - 약칭("산집법")은 매칭되지 않을 수 있음 → 정식 명칭 권장
+- `query` *(string, required)* — 법령명 또는 약칭
 - `display` *(int, optional, 기본 20)* — 최대 결과 개수
+- `org` *(string, optional)* — 소관부처명 부분일치 필터 (응답 후처리)
+- `include_abbreviation` *(bool, optional, 기본 False)* — True면 내장 약칭 사전(`산집법`·`청탁금지법`·`공운법` 등 13종)으로 query 매핑
 
 **반환 예**
 ```json
@@ -51,13 +52,19 @@ Claude ──stdio──▶ server.py(MCP) ──HTTPS──▶ NAS proxy(FastAP
 }
 ```
 
-### 2. `get_law_text(mst, jo=None)`
+### 2. `get_law_text(mst, jo=None, mode="full")`
 
 법령 본문 전체 또는 특정 조문 조회.
 
 **인자**
 - `mst` *(string, required)* — `search_law` 결과의 법령일련번호(MST)
-- `jo` *(string, optional)* — 조문 지정. `"제3조"` 또는 6자리 코드 `"000300"`. 생략 시 전체 조문 반환
+- `jo` *(string, optional)* — 조문 지정. `"제3조"` 또는 6자리 코드 `"000300"`. 생략 시 전체
+- `mode` *(string, optional, 기본 `"full"`)* — 응답 크기 제어 (jo 미지정일 때만 적용)
+  - `"summary"`: 기본정보 + 조문목록(번호·제목·여부)만 (수 KB)
+  - `"articles_only"`: 기본정보 + 조문 (부칙·개정문 제외)
+  - `"full"`: 전체 (기본값, 호환성). 부칙 평탄화 결과를 `법령.부칙_flat` 키로 추가 노출
+
+> 주의: 산집법·민법 등 큰 법령은 `mode="full"` 응답이 500 KB를 넘는다. 먼저 `mode="summary"`로 조문 구조를 파악한 뒤 필요한 조문만 `jo` 지정 호출하는 패턴을 권장한다.
 
 **반환 예 (jo="000300")**
 ```json
@@ -77,13 +84,16 @@ Claude ──stdio──▶ server.py(MCP) ──HTTPS──▶ NAS proxy(FastAP
 }
 ```
 
-### 3. `search_decisions(query, display=20)`
+### 3. `search_decisions(query, display=20, court=None, date_from=None, date_to=None)`
 
 판례를 키워드로 검색.
 
 **인자**
 - `query` *(string, required)* — 검색어 (예: `"개인정보 유출"`, `"손해배상"`)
 - `display` *(int, optional, 기본 20)*
+- `court` *(string, optional)* — 법원명 정확매칭 (예: `"대법원"`, `"서울고등법원"`)
+- `date_from`·`date_to` *(string, optional)* — 선고일 범위. `YYYYMMDD` / `YYYY-MM-DD` / `YYYY.MM.DD` / `YYYY/MM/DD` 수용. 한쪽만 지정 시 반대편은 무한대로 보충
+  - 법제처 API는 `prncYd='YYYYMMDD~YYYYMMDD'` 형식만 지원(실측). 단일 날짜·다른 키는 무효
 
 **반환 예**
 ```json
@@ -153,6 +163,16 @@ claude mcp add open-law -s user \
 |---|---|---|---|
 | `LAW_PROXY_TOKEN` | ✓ | — | NAS 프록시 인증 토큰 (X-Proxy-Token 헤더) |
 | `LAW_PROXY_URL` | | `http://giovinazo.synology.me:8765` | NAS 프록시 base URL |
+| `OPEN_LAW_CACHE` | | `1` | `0`이면 디스크 캐시 우회 (테스트·디버깅용) |
+
+### 디스크 캐싱
+
+`_call` 진입점에서 응답을 `~/.cache/open-law-mcp/<sha1>.json`에 저장한다(TTL 7일). 같은 호출 두 번째부터는 API를 거치지 않고 즉시 반환(실측 0.26s → 0.001s, 약 260배 가속). 법령 본문은 시행일 변경 전까지 불변이므로 일일 호출 한도 절감 효과가 크다.
+
+- 캐시 키: `sha1(path + "|" + urlencode(sorted(params)))` — 토큰은 헤더라 키에서 제외
+- `mode`·`org` 등 후처리 인자는 `_call` 외부에서 처리되므로 동일 raw 응답을 공유
+- 손상된 캐시 파일은 자동으로 무시·재생성
+- 끄려면 `OPEN_LAW_CACHE=0`
 
 ## NAS 프록시
 
@@ -183,14 +203,18 @@ Claude에서 자연어 한 줄로:
 |---|---|
 | "개인정보 보호법 찾아줘" | `search_law("개인정보 보호법")` |
 | "그 법 제3조 보여줘" | `get_law_text(mst, "000300")` |
-| "산집법 시행령 가져와" | `search_law("산업집적활성화 및 공장설립에 관한 법률 시행령")` |
+| "산집법 찾아줘" | `search_law("산집법", include_abbreviation=True)` |
+| "산업통상자원부 소관 법령 중에서…" | `search_law("법", org="산업통상자원부")` |
+| "산집법 구조만 빠르게" | `search_law(...)` → `get_law_text(mst, mode="summary")` |
+| "대법원 2020~2025 개인정보 판례" | `search_decisions("개인정보", court="대법원", date_from="20200101", date_to="20251231")` |
 | "네이트 개인정보 유출 판결 요지" | `search_decisions("개인정보 유출")` → `get_decision_text(id)` |
 
 ## 주의사항
 
 - **한글 query는 자동 URL 인코딩**: `type=JSON` 모드에서 한글 query를 인코딩 없이 보내면 응답 body가 `{}`로 비어 반환되는 함정이 있다. `requests` 라이브러리는 자동 처리하므로 본 MCP는 안전.
-- **법령 약칭**: `search_law`는 정식 법령명 기준. 약칭(`산집법`, `개보법`)은 미매칭될 수 있음.
-- **일일 호출 제한**: 법제처 OPEN API는 일일 호출 한도가 있다(초과 시 차단). 대량 조회 시 캐싱 권장.
+- **법령 약칭**: 기본은 정식 명칭 검색. `include_abbreviation=True`로 내장 사전(13종) 매핑 사용 가능. 사전에 없는 약칭은 그대로 검색됨.
+- **일일 호출 제한**: 법제처 OPEN API는 일일 호출 한도가 있다(초과 시 차단). v1.1부터 디스크 캐시(TTL 7일)로 반복 호출 절감.
+- **선고일 필터 형식**: `search_decisions`의 `date_from/to`는 반드시 범위 호출로 보내진다. 단일 날짜의 prncYd, prncYdStart/End, dateFrom/To는 API가 무시한다(실측 확인).
 
 ## 데이터 출처 / API 참고
 
@@ -215,18 +239,24 @@ Claude에서 자연어 한 줄로:
 
 ## 변경 이력
 
-- **v1.0** (2026-05-17) — GitHub private 등록. 도구 4종 (`search_law`·`get_law_text`·`search_decisions`·`get_decision_text`), NAS 프록시 경유 구조.
+- **v1.1** (2026-05-17) — 외부 개선 지시서 1차 반영
+  - `get_law_text`에 `mode=summary|articles_only|full` 파라미터(작업 4), 부칙 평탄화 `부칙_flat` 키(작업 3)
+  - `search_law`에 약칭 사전 13종·`org` 소관부처 필터(작업 7)
+  - `search_decisions`에 `court`·`date_from`·`date_to` 필터(작업 8, 법제처 API 실측 매핑)
+  - `_call` 진입점에 디스크 캐싱 TTL 7일, `OPEN_LAW_CACHE` 토글(작업 5)
+  - 4개 도구 docstring 형식 통일(작업 1·9)
+- **v1.0** (2026-05-17) — GitHub private 등록. 도구 4종, NAS 프록시 경유 구조.
 - (2026-05-16) NAS 프록시(IP 화이트리스트 우회) 도입
 - (2026-04-26) 초기 FastMCP 서버 구축
 
 ## 후속 계획
 
+- [ ] **`list_law_history` / `get_law_text_at`** — 법령 개정 이력·시점 본문 조회 (법제처 `lsHstGrp`/`lsHstInf` 엔드포인트 명세 확정 + NAS 프록시 `ALLOWED_PATHS` 확장 후)
 - [ ] `verify_citations` — 본문 인용 검증 (인용된 법령·조문이 현행인지 / 개정 이력 추적)
 - [ ] `chain_search_then_text` — 검색 후 자동으로 본문 조회까지 한 번에
 - [ ] target 확대 — `admrul`(행정규칙)·`expc`(법령해석례)·`pi`(공공기관 규정) 도구 추가
-- [ ] 약칭 자동 변환 — `산집법` → 정식 명칭 매핑
-- [ ] 응답 캐싱 — 같은 법령·조문 반복 조회 시 일일 한도 절약
+- [ ] 약칭 사전 외부화 — 항목 20종 초과 시 별도 JSON 파일로 분리
 
 ---
 
-**English summary**: MCP server exposing Korea's National Law Information Center (law.go.kr) for LLM agents. Provides 4 tools (law search, law text/article, case-law search, case-law text). Uses a NAS-hosted FastAPI proxy to bypass the law.go.kr IP-whitelist limitation. v1.0.
+**English summary**: MCP server exposing Korea's National Law Information Center (law.go.kr) for LLM agents. Provides 4 tools (law search, law text/article, case-law search, case-law text) with optional filters (response mode, abbreviation map, jurisdictional org, court, sentencing-date range) and 7-day disk cache. Uses a NAS-hosted FastAPI proxy to bypass the law.go.kr IP-whitelist limitation. v1.1.

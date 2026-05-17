@@ -17,6 +17,24 @@ from mcp.server.fastmcp import FastMCP
 PROXY_URL = os.environ.get("LAW_PROXY_URL", "http://giovinazo.synology.me:8765").rstrip("/")
 TIMEOUT = 30
 
+# 자주 쓰는 법령 약칭 → 정식 명칭 (search_law include_abbreviation=True 시 적용)
+# TODO: 20개 초과 시 별도 JSON으로 분리.
+_LAW_ABBR = {
+    "산집법": "산업집적활성화 및 공장설립에 관한 법률",
+    "산업단지법": "산업입지 및 개발에 관한 법률",
+    "개보법": "개인정보 보호법",
+    "개인정보법": "개인정보 보호법",
+    "정보통신망법": "정보통신망 이용촉진 및 정보보호 등에 관한 법률",
+    "공정거래법": "독점규제 및 공정거래에 관한 법률",
+    "근기법": "근로기준법",
+    "산안법": "산업안전보건법",
+    "공공기관운영법": "공공기관의 운영에 관한 법률",
+    "공운법": "공공기관의 운영에 관한 법률",
+    "국정감사법": "국정감사 및 조사에 관한 법률",
+    "부정청탁법": "부정청탁 및 금품등 수수의 금지에 관한 법률",
+    "청탁금지법": "부정청탁 및 금품등 수수의 금지에 관한 법률",
+}
+
 mcp = FastMCP("open-law")
 
 
@@ -61,13 +79,23 @@ def _normalize_buchik(buchik_block: dict | None) -> list[dict]:
 
 
 @mcp.tool()
-def search_law(query: str, display: int = 20) -> dict:
+def search_law(
+    query: str,
+    display: int = 20,
+    org: str | None = None,
+    include_abbreviation: bool = False,
+) -> dict:
     """법령명으로 현행 법령을 검색하여 MST(법령일련번호)·법령ID를 얻는다.
 
     Args:
-        query: 법령명. 정식 명칭 권장 (예: '개인정보 보호법', '관세법').
-            약칭(예: '산집법')은 미매칭일 수 있다.
+        query: 법령명 또는 약칭. 기본은 정식 명칭으로 검색
+            (예: '개인정보 보호법'). 약칭으로 검색하려면
+            include_abbreviation=True (예: '산집법', '청탁금지법').
         display: 최대 결과 개수. 기본 20.
+        org: 소관부처명 부분일치 필터 (예: '산업통상자원부',
+            '개인정보보호위원회'). 응답 후처리.
+        include_abbreviation: True면 query를 내장 약칭 사전으로 매핑.
+            기본 False (기존 동작 유지).
 
     Returns:
         {"LawSearch": {"law": [{법령일련번호, 법령명한글, 소관부처명,
@@ -75,9 +103,21 @@ def search_law(query: str, display: int = 20) -> dict:
 
     Examples:
         search_law("개인정보 보호법")
-        search_law("관세법", display=5)
+        search_law("산집법", include_abbreviation=True)
+        search_law("관세법", org="기획재정부")
     """
-    return _call("lawSearch.do", {"target": "law", "query": query, "display": display})
+    q = _LAW_ABBR.get(query, query) if include_abbreviation else query
+    res = _call("lawSearch.do", {"target": "law", "query": q, "display": display})
+    if org:
+        search = res.get("LawSearch")
+        if isinstance(search, dict):
+            laws = search.get("law", [])
+            if isinstance(laws, dict):
+                laws = [laws]
+            filtered = [x for x in laws if isinstance(x, dict) and org in (x.get("소관부처명") or "")]
+            search["law"] = filtered
+            search["totalCnt"] = str(len(filtered))
+    return res
 
 
 @mcp.tool()

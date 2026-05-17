@@ -1,0 +1,10 @@
+services:
+  law-proxy:
+    build: .
+    container_name: law-proxy
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      LAW_OC: giovinazo
+      PROXY_TOKEN: ${PROXY_TOKEN}

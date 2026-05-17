@@ -31,6 +31,35 @@ def _call(path: str, params: dict) -> dict:
     return r.json()
 
 
+def _normalize_buchik(buchik_block: dict | None) -> list[dict]:
+    """법령 응답의 부칙 블록을 평탄화한다.
+
+    원본은 ``{"부칙단위": [{...}, ...]}`` (단건 시 dict)이며 각 단위의
+    ``부칙내용``은 ``list[list[str]]`` 이중 리스트라 LLM이 다루기 어렵다.
+    이를 ``[{공포일자, 공포번호, 부칙키, 내용(str)}]`` 형태로 평탄화한다.
+    """
+    if not buchik_block:
+        return []
+    units = buchik_block.get("부칙단위", [])
+    if isinstance(units, dict):
+        units = [units]
+    out = []
+    for unit in units:
+        lines: list[str] = []
+        for block in unit.get("부칙내용", []):
+            if isinstance(block, list):
+                lines.extend(str(x) for x in block if x is not None)
+            elif block:
+                lines.append(str(block))
+        out.append({
+            "공포일자": unit.get("부칙공포일자"),
+            "공포번호": unit.get("부칙공포번호"),
+            "부칙키": unit.get("부칙키"),
+            "내용": "\n".join(lines),
+        })
+    return out
+
+
 @mcp.tool()
 def search_law(query: str, display: int = 20) -> dict:
     """법령명으로 현행 법령을 검색하여 MST(법령일련번호)·법령ID를 얻는다.
@@ -89,6 +118,9 @@ def get_law_text(
     raw = _call("lawService.do", params)
 
     if jo or mode == "full":
+        body = raw.get("법령")
+        if isinstance(body, dict) and body.get("부칙"):
+            body["부칙_flat"] = _normalize_buchik(body["부칙"])
         return raw
 
     body = raw.get("법령", {})
